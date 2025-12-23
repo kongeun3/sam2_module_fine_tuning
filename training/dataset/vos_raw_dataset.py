@@ -4,6 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+MOSE 데이터셋에서 이미지와 gt 파일들을 parsing하여 메타데이터 정리
+"""
+
 import glob
 import logging
 import os
@@ -24,6 +28,7 @@ from training.dataset.vos_segment_loader import (
     MultiplePNGSegmentLoader,
     PalettisedPNGSegmentLoader,
     SA1BSegmentLoader,
+    CityscapesSegmentLoader,
 )
 
 
@@ -304,5 +309,48 @@ class JSONRawDataset(VOSRawDataset):
         video = VOSVideo(video_name, video_idx, frames)
         return video, segment_loader
 
+    def __len__(self):
+        return len(self.video_names)
+    
+class CityscapesDataset(VOSRawDataset):
+    def __init__(
+        self,
+        img_folder, # {데이터셋 경로}/train|val/leftImg8bit
+        gt_folder,  # {데이터셋 경로}/train|val/gtFine
+        file_list_txt=None,
+        sample_rate=1,
+    ):
+        super().__init__()
+        self.img_folder = img_folder
+        self.gt_folder = gt_folder
+        self.sample_rate = sample_rate
+
+        # 1. img_folder에서 직접 파일 리스트 생성
+        search_path = os.path.join(self.img_folder, "*_leftImg8bit.png")
+        all_files = glob.glob(search_path)
+        
+        if not all_files:
+            raise FileNotFoundError(f"{search_path} 경로에서 이미지를 찾을 수 없습니다.")
+
+        # 2. 공통 ID 추출
+        self.video_names = []
+        for f in sorted(all_files):
+            base_name = os.path.basename(f).replace("_leftImg8bit.png", "")
+            self.video_names.append(base_name)
+            
+        print(f"Cityscapes 스캔 완료: {len(self.video_names)}개의 데이터를 로드했습니다.")
+
+    def get_video(self, video_idx):
+        video_name = self.video_names[video_idx]
+        
+        # 3. 이미지와 마스크 경로 생성
+        img_path = os.path.join(self.img_folder, f"{video_name}_leftImg8bit.png")
+        mask_path = os.path.join(self.gt_folder, f"{video_name}_gtFine_labelIds.png")
+        
+        frames = [VOSFrame(frame_idx=0, image_path=img_path)]
+        segment_loader = CityscapesSegmentLoader(mask_path)
+        
+        return VOSVideo(video_name=video_name, video_id=video_idx, frames=frames), segment_loader #
+    
     def __len__(self):
         return len(self.video_names)

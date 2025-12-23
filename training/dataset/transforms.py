@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Transforms and data augmentation for both image + bbox.
+데이터 Agmentation을 위한 변환 함수들
 """
 
 import logging

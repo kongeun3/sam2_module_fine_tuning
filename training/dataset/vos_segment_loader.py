@@ -4,6 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+gt 마스크 읽어오기
+"""
+
 import glob
 import json
 import os
@@ -298,3 +302,28 @@ class SA1BSegmentLoader:
 
     def load(self, frame_idx):
         return self.segments
+
+class CityscapesSegmentLoader:
+    def __init__(self, mask_path):
+        """
+        Cityscapes 전용 단일 파일 로더
+        mask_path: 실제 마스크 파일의 전체 경로 (str)
+        """
+        self.mask_path = mask_path
+
+    def load(self, frame_id):
+        masks = PILImage.open(self.mask_path).convert("P")
+        masks = np.array(masks)
+
+        # 이미지 내 고유 ID 추출 ([0, 1, 2])
+        object_ids = np.unique(masks.flatten())
+        
+        # 배경(0)과 신축이음(1) 제외
+        object_ids = [i for i in object_ids if i not in [0, 1]]
+
+        binary_segments = {}
+        for i in object_ids:
+            # 해당 ID만 1(True)로 변환하여 딕셔너리에 저장
+            binary_segments[i] = torch.from_numpy(masks == i)
+
+        return binary_segments

@@ -4,7 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Some wrapping utilities extended from pytorch's to support repeat factor sampling in particular"""
+"""
+데이터셋 합치기, 학습 비중 조절(반복 학습) 등을 위한 유틸리티
+"""
 
 from typing import Iterable
 

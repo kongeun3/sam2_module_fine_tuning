@@ -4,6 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+최상위 데이터로더 (MixedDataLoader: 혼합한 데이터 제공) 및 혼합 데이터셋 (TorchTrainMixedDataset) 정의, 에폭 페이즈 처리 담당
+"""
+
 import logging
 import math
 from typing import Callable, Iterable, List, Optional, Sequence

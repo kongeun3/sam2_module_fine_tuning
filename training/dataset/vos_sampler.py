@@ -4,6 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+프레임들을 어떻게 샘플링할지에 대한 로직 담당
+"""
+
 import random
 from dataclasses import dataclass
 from typing import List

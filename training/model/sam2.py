@@ -66,8 +66,16 @@ class SAM2Train(SAM2Base):
         # of all frames at once. This avoids backbone OOM errors on very long videos in evaluation, but could be slightly slower.
         forward_backbone_per_frame_for_eval=False,
         freeze_image_encoder=False,
+        # freeze_options per module
+        train_image_encoder: bool = True,
+        train_prompt_encoder: bool = True,
+        train_mask_decoder: bool = True,
         **kwargs,
     ):
+        print(f"train_image_encoder flag is {train_image_encoder}")
+        print(f"train_prompt_encoder flag is {train_prompt_encoder}")
+        print(f"train_mask_decoder flag is {train_mask_decoder}")
+
         super().__init__(image_encoder, memory_attention, memory_encoder, **kwargs)
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
@@ -103,6 +111,17 @@ class SAM2Train(SAM2Base):
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
+        
+        self._set_trainable(self.image_encoder, train_image_encoder)
+        self._set_trainable(self.sam_prompt_encoder, train_prompt_encoder)
+        self._set_trainable(self.sam_mask_decoder, train_mask_decoder)
+        
+        trainable_params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"--- 진짜 학습 대상 파라미터 수: {trainable_params_count:,} 개 ---")
+
+    def _set_trainable(self, module, trainable: bool):
+        for p in module.parameters():
+            p.requires_grad = trainable
 
     def forward(self, input: BatchedVideoDatapoint):
         if self.training or not self.forward_backbone_per_frame_for_eval:

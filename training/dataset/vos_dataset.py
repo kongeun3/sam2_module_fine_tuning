@@ -4,6 +4,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+"""
+실제로 학습에 사용하는 최종적인 데이터 형태(VideoDatapoint) 생성
+"""
+
 import logging
 import random
 from copy import deepcopy

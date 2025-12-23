@@ -9,3 +9,5 @@ _C.*
 outputs/*
 checkpoints/*.pt
 demo/backend/checkpoints/*.pt
+sam2/configs/sam2.1_training/sam2.1_hiera_b+_Cityscapes_finetune_copy.yaml
+sam2/configs/**/*_ignore.yaml
