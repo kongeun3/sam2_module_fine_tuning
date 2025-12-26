@@ -119,8 +119,8 @@ def iou_loss(
     else:
         loss = F.mse_loss(pred_ious, actual_ious, reduction="none")
     if loss_on_multimask:
-        return loss / num_objects
-    return loss.sum() / num_objects
+        return loss / num_objects, actual_ious # [Modified] return actual_ious for validation
+    return loss.sum() / num_objects, actual_ious # [Modified] return actual_ious for validation
 
 
 class MultiStepMultiMasksAndIous(nn.Module):
@@ -205,13 +205,18 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert len(object_score_logits_list) == len(ious_list)
 
         # accumulate the loss over prediction steps
-        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        # [Modified] also accumulate actual ious for validation
+        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0, "actual_iou": 0}
         for src_masks, ious, object_score_logits in zip(
             src_masks_list, ious_list, object_score_logits_list
         ):
             self._update_losses(
                 losses, src_masks, target_masks, ious, num_objects, object_score_logits
             )
+
+        # [Modified] Average actual iou over number of steps
+        losses["actual_iou"] /= len(src_masks_list)
+
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
@@ -253,7 +258,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 gamma=self.focal_gamma_obj_score,
             )
 
-        loss_multiiou = iou_loss(
+        loss_multiiou, actual_ious = iou_loss( # [Modified] capture actual_ious for validation
             src_masks,
             target_masks,
             ious,
@@ -274,6 +279,10 @@ class MultiStepMultiMasksAndIous(nn.Module):
             batch_inds = torch.arange(loss_combo.size(0), device=loss_combo.device)
             loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
             loss_dice = loss_multidice[batch_inds, best_loss_inds].unsqueeze(1)
+
+            # [Modified] Return actual ious of best masks for validation
+            best_actual_iou = actual_ious[batch_inds, best_loss_inds].unsqueeze(1)
+
             # calculate the iou prediction and slot losses only in the index
             # with the minimum loss for each mask (to be consistent w/ SAM)
             if self.supervise_all_iou:
@@ -284,6 +293,14 @@ class MultiStepMultiMasksAndIous(nn.Module):
             loss_mask = loss_multimask
             loss_dice = loss_multidice
             loss_iou = loss_multiiou
+
+            # [Modified] Return actual ious for validation
+            best_actual_iou = actual_ious
+
+        # [Modified] Store best actual ious for validation
+        if "actual_iou" not in losses:
+            losses["actual_iou"] = 0
+        losses["actual_iou"] += best_actual_iou.mean()
 
         # backprop focal, dice and iou loss only if obj present
         loss_mask = loss_mask * target_obj
