@@ -322,3 +322,69 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 reduced_loss += losses[loss_key] * weight
 
         return reduced_loss
+
+class CustomBCELoss(MultiStepMultiMasksAndIous):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.weight_dict["loss_dice"] = 0.0 
+
+    def _update_losses(
+        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
+    ):
+        target_masks = target_masks.expand_as(src_masks)
+        device = src_masks.device
+        
+        loss_multimask = sigmoid_focal_loss(
+            src_masks,
+            target_masks,
+            num_objects,
+            alpha=self.focal_alpha,
+            gamma=0,    # Gamma=0 : BCE
+            loss_on_multimask=True,
+        )
+
+        loss_multiiou, actual_ious = iou_loss(
+            src_masks,
+            target_masks,
+            ious,
+            num_objects,
+            loss_on_multimask=True,
+            use_l1_loss=self.iou_use_l1_loss,
+        )
+
+        if not self.pred_obj_scores:
+            loss_class = torch.tensor(0.0, device=device) 
+            target_obj = torch.ones(loss_multimask.shape[0], 1, device=device)
+        else:
+            target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[..., None].float()
+            loss_class = sigmoid_focal_loss(
+                object_score_logits,
+                target_obj,
+                num_objects,
+                alpha=self.focal_alpha_obj_score,
+                gamma=0,    # Gamma=0 : BCE
+            )
+
+        if loss_multimask.size(1) > 1:
+            best_loss_inds = torch.argmin(loss_multimask, dim=-1)
+            batch_inds = torch.arange(loss_multimask.size(0), device=device)
+            loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
+            best_actual_iou = actual_ious[batch_inds, best_loss_inds].unsqueeze(1)
+            loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1) if self.supervise_all_iou else loss_multiiou[batch_inds, best_loss_inds].unsqueeze(1)
+        else:
+            loss_mask = loss_multimask
+            loss_iou = loss_multiiou
+            best_actual_iou = actual_ious
+
+        if "actual_iou" not in losses:
+            losses["actual_iou"] = torch.tensor(0.0, device=device)
+        losses["actual_iou"] += best_actual_iou.mean()
+
+        losses["loss_mask"] += (loss_mask * target_obj).sum()
+        losses["loss_iou"] += (loss_iou * target_obj).sum()
+        losses["loss_class"] += loss_class
+        
+        if isinstance(losses["loss_dice"], (int, float)):
+             losses["loss_dice"] = torch.tensor(0.0, device=device)
+        else:
+             losses["loss_dice"] += torch.tensor(0.0, device=device)
