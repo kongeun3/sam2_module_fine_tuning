@@ -350,7 +350,7 @@ class CityscapesDataset(VOSRawDataset):
         frames = [VOSFrame(frame_idx=0, image_path=img_path)]
         segment_loader = CityscapesSegmentLoader(mask_path)
         
-        return VOSVideo(video_name=video_name, video_id=video_idx, frames=frames), segment_loader #
+        return VOSVideo(video_name=video_name, video_id=video_idx, frames=frames), segment_loader
     
     def __len__(self):
         return len(self.video_names)

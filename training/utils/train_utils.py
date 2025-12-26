@@ -286,3 +286,15 @@ def get_resume_checkpoint(checkpoint_save_dir):
         return None
 
     return ckpt_file
+
+def get_checkpoint_list(checkpoint_save_dir):
+    if not g_pathmgr.isdir(checkpoint_save_dir):
+        return []
+    all_files = g_pathmgr.ls(checkpoint_save_dir)
+    checkpoint_files = []
+    for f in all_files:
+        if re.match(r"^checkpoint_[0-9]+\.pt$", f):
+            checkpoint_files.append(os.path.join(checkpoint_save_dir, f))
+            
+    checkpoint_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+    return checkpoint_files

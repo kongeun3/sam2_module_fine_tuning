@@ -334,6 +334,7 @@ def load_state_dict_into_model(
     ignore_missing_keys: List[str] = None,
     ignore_unexpected_keys: List[str] = None,
     checkpoint_kernels: List[Callable] = None,
+    ignore_ddp: bool = False,
 ):
     """
     Loads a state dict into the given model.
@@ -349,6 +350,21 @@ def load_state_dict_into_model(
     if checkpoint_kernels is not None:
         for f in checkpoint_kernels:
             state_dict = f(state_dict=state_dict)
+
+    if ignore_ddp: # Fix Error for 'val_all' Mode
+        model_keys = set(model.state_dict().keys())
+        ckpt_keys = set(state_dict.keys())
+
+        if any(k.startswith("module.") for k in model_keys) and \
+           not any(k.startswith("module.") for k in ckpt_keys):
+            state_dict = {f"module.{k}": v for k, v in state_dict.items()}
+            logging.info("Auto-fixing: Added 'module.' prefix to match DDP model.")
+
+        elif not any(k.startswith("module.") for k in model_keys) and \
+             any(k.startswith("module.") for k in ckpt_keys):
+            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+            logging.info("Auto-fixing: Removed 'module.' prefix to match raw model.")
+
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
 
     check_load_state_dict_errors(

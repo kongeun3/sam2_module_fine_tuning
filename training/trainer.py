@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ from training.utils.train_utils import (
     get_amp_type,
     get_machine_local_and_dist_rank,
     get_resume_checkpoint,
+    get_checkpoint_list,
     human_readable_time,
     is_dist_avail_and_initialized,
     log_env_variables,
@@ -330,7 +332,7 @@ class Trainer:
                 self.checkpoint_conf.save_freq > 0
                 and (int(epoch) % self.checkpoint_conf.save_freq == 0)
             ) or int(epoch) in self.checkpoint_conf.save_list:
-                checkpoint_names.append(f"epoch_{int(epoch)}")
+                checkpoint_names.append(f"checkpoint_{int(epoch)}")
 
         checkpoint_paths = []
         for ckpt_name in checkpoint_names:
@@ -379,14 +381,20 @@ class Trainer:
         success = g_pathmgr.mv(checkpoint_path_tmp, checkpoint_path)
         assert success
 
-    def load_checkpoint(self):
-        ckpt_path = get_resume_checkpoint(self.checkpoint_conf.save_dir)
+    def load_checkpoint(self, user_ckpt_path: Optional[str] = None, ignore_ddp: bool = False):
+        # 1. Set Chekpoint Path
+        if user_ckpt_path is not None:
+            ckpt_path = user_ckpt_path
+        else:
+            ckpt_path = get_resume_checkpoint(self.checkpoint_conf.save_dir)
+        
+        # 2. Load Checkpoint or Init Model State
         if ckpt_path is None:
             self._init_model_state()
         else:
             if self.checkpoint_conf.initialize_after_preemption:
                 self._call_model_initializer()
-            self._load_resuming_checkpoint(ckpt_path)
+            self._load_resuming_checkpoint(ckpt_path, ignore_ddp=ignore_ddp)
 
     def _init_model_state(self):
         # Checking that parameters that won't be saved are indeed frozen
@@ -419,7 +427,7 @@ class Trainer:
             )
             self.model = model_weight_initializer(model=self.model)
 
-    def _load_resuming_checkpoint(self, ckpt_path: str):
+    def _load_resuming_checkpoint(self, ckpt_path: str, ignore_ddp: bool = False):
         logging.info(f"Resuming training from {ckpt_path}")
 
         with g_pathmgr.open(ckpt_path, "rb") as f:
@@ -428,6 +436,7 @@ class Trainer:
             model=self.model,
             state_dict=checkpoint["model"],
             ignore_missing_keys=self.checkpoint_conf.skip_saving_parameters,
+            ignore_ddp=ignore_ddp,
         )
 
         self.optim.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -497,7 +506,7 @@ class Trainer:
         return ret_tuple
 
     def run(self):
-        assert self.mode in ["train", "train_only", "val"]
+        assert self.mode in ["train", "train_only", "val", "val_all"] # val_all: check all checkpoinhts on val set
         if self.mode == "train":
             if self.epoch > 0:
                 logging.info(f"Resuming training from epoch: {self.epoch}")
@@ -511,6 +520,8 @@ class Trainer:
             self.run_val()
         elif self.mode == "val":
             self.run_val()
+        elif self.mode == "val_all":
+            self.run_val_all()
         elif self.mode == "train_only":
             self.run_train()
 
@@ -518,7 +529,7 @@ class Trainer:
         self.train_dataset = None
         self.val_dataset = None
 
-        if self.mode in ["train", "val"]:
+        if self.mode in ["train", "val", "val_all"]:
             self.val_dataset = instantiate(self.data_conf.get(Phase.VAL, None))
 
         if self.mode in ["train", "train_only"]:
@@ -579,6 +590,33 @@ class Trainer:
                 "a",
             ) as f:
                 f.write(json.dumps(outs) + "\n")
+    
+    def run_val_all(self):
+        # 1. Load All Checkpoints in the Checkpoint Folder
+        ckpt_list = get_checkpoint_list(self.checkpoint_conf.save_dir)
+        
+        if not ckpt_list:
+            logging.warning(f"No Checkpoint in {self.checkpoint_conf.save_dir}.")
+            return
+        
+        for ckpt_path in ckpt_list:
+            logging.info(f"==== Validating: {os.path.basename(ckpt_path)} ====")
+            
+            # 2. Load Checkpoint Weights
+            self.load_checkpoint(user_ckpt_path=ckpt_path, ignore_ddp=True)
+            
+            # 3. Set Epoch Number from Checkpoint Name
+            try:
+                self.epoch = int(re.findall(r'\d+', os.path.basename(ckpt_path))[0])
+            except Exception:
+                pass
+
+            # 4. Validation
+            self.run_val()
+            
+            # 5. Clear GPU Cache
+            torch.cuda.empty_cache()
+
 
     def val_epoch(self, val_loader, phase):
         batch_time = AverageMeter("Batch Time", self.device, ":.2f")
