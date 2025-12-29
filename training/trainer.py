@@ -381,7 +381,7 @@ class Trainer:
         success = g_pathmgr.mv(checkpoint_path_tmp, checkpoint_path)
         assert success
 
-    def load_checkpoint(self, user_ckpt_path: Optional[str] = None, ignore_ddp: bool = False):
+    def load_checkpoint(self, user_ckpt_path: Optional[str] = None, ignore_ddp: bool = False, ignore_train: bool = False):
         # 1. Set Chekpoint Path
         if user_ckpt_path is not None:
             ckpt_path = user_ckpt_path
@@ -394,7 +394,7 @@ class Trainer:
         else:
             if self.checkpoint_conf.initialize_after_preemption:
                 self._call_model_initializer()
-            self._load_resuming_checkpoint(ckpt_path, ignore_ddp=ignore_ddp)
+            self._load_resuming_checkpoint(ckpt_path, ignore_ddp=ignore_ddp, ignore_train=ignore_train)
 
     def _init_model_state(self):
         # Checking that parameters that won't be saved are indeed frozen
@@ -427,31 +427,44 @@ class Trainer:
             )
             self.model = model_weight_initializer(model=self.model)
 
-    def _load_resuming_checkpoint(self, ckpt_path: str, ignore_ddp: bool = False):
+    def _load_resuming_checkpoint(self, ckpt_path: str, ignore_ddp: bool = False, ignore_train: bool = False):
         logging.info(f"Resuming training from {ckpt_path}")
 
         with g_pathmgr.open(ckpt_path, "rb") as f:
             checkpoint = torch.load(f, map_location="cpu")
+
+        state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+
         load_state_dict_into_model(
             model=self.model,
-            state_dict=checkpoint["model"],
+            state_dict=state_dict,
             ignore_missing_keys=self.checkpoint_conf.skip_saving_parameters,
             ignore_ddp=ignore_ddp,
         )
 
-        self.optim.optimizer.load_state_dict(checkpoint["optimizer"])
-        self.loss.load_state_dict(checkpoint["loss"], strict=True)
-        self.epoch = checkpoint["epoch"]
-        self.steps = checkpoint["steps"]
-        self.ckpt_time_elapsed = checkpoint.get("time_elapsed")
+        if not ignore_train:
+            self.optim.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.loss.load_state_dict(checkpoint["loss"], strict=True)
+            self.epoch = checkpoint["epoch"]
+            self.steps = checkpoint["steps"]
+            self.ckpt_time_elapsed = checkpoint.get("time_elapsed")
 
-        if self.optim_conf.amp.enabled and "scaler" in checkpoint:
-            self.scaler.load_state_dict(checkpoint["scaler"])
+            if self.optim_conf.amp.enabled and "scaler" in checkpoint:
+                self.scaler.load_state_dict(checkpoint["scaler"])
 
-        self.best_meter_values = checkpoint.get("best_meter_values", {})
+            self.best_meter_values = checkpoint.get("best_meter_values", {})
 
-        if "train_dataset" in checkpoint and self.train_dataset is not None:
-            self.train_dataset.load_checkpoint_state(checkpoint["train_dataset"])
+            if "train_dataset" in checkpoint and self.train_dataset is not None:
+                self.train_dataset.load_checkpoint_state(checkpoint["train_dataset"])
+        else:
+            logging.info("Skipping training state load (optimizer, loss, epoch, etc.).")
+            self.epoch = 0
+            if hasattr(self, 'steps') and isinstance(self.steps, dict):
+                for k in self.steps.keys():
+                    self.steps[k] = 0
+            else:
+                from training.utils.train_utils import Phase
+                self.steps = {Phase.TRAIN: 0, Phase.VAL: 0}
 
     def is_intermediate_val_epoch(self, epoch):
         return epoch % self.val_epoch_freq == 0 and epoch < self.max_epochs - 1
@@ -592,6 +605,16 @@ class Trainer:
                 f.write(json.dumps(outs) + "\n")
     
     def run_val_all(self):
+        # 0. Initial Checkpoint (Epoch=0) Validation
+        initial_ckpt_path = self.checkpoint_conf.model_weight_initializer.state_dict.checkpoint_path
+
+        logging.info(f"==== Validating: Initial State (Epoch 0) ====")
+        logging.info(f"Loading weights from initial config path: {initial_ckpt_path}")
+
+        self.load_checkpoint(user_ckpt_path=initial_ckpt_path, ignore_ddp=True, ignore_train=True)
+        self.epoch = 0
+        self.run_val()
+
         # 1. Load All Checkpoints in the Checkpoint Folder
         ckpt_list = get_checkpoint_list(self.checkpoint_conf.save_dir)
         
