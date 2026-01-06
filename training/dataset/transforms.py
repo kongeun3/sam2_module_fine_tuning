@@ -55,8 +55,10 @@ def get_size_with_aspect_ratio(image_size, size, max_size=None):
     return (oh, ow)
 
 
-def resize(datapoint, index, size, max_size=None, square=False, v2=False):
+def resize(datapoint, index, size, max_size=None, square=False, v2=False, 
+           interpolation=F.InterpolationMode.BILINEAR, target_interpolation=F.InterpolationMode.NEAREST):
     # size can be min_size (scalar) or (w, h) tuple
+    # Add Interpolation Option
 
     def get_size(image_size, size, max_size=None):
         if isinstance(size, (list, tuple)):
@@ -81,10 +83,10 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
     )
     if v2:
         datapoint.frames[index].data = Fv2.resize(
-            datapoint.frames[index].data, size, antialias=True
+            datapoint.frames[index].data, size, antialias=True, interpolation=interpolation
         )
     else:
-        datapoint.frames[index].data = F.resize(datapoint.frames[index].data, size)
+        datapoint.frames[index].data = F.resize(datapoint.frames[index].data, size, interpolation=interpolation)
 
     new_size = (
         datapoint.frames[index].data.size()[-2:][::-1]
@@ -94,7 +96,7 @@ def resize(datapoint, index, size, max_size=None, square=False, v2=False):
 
     for obj in datapoint.frames[index].objects:
         if obj.segment is not None:
-            obj.segment = F.resize(obj.segment[None, None], size).squeeze()
+            obj.segment = F.resize(obj.segment[None, None], size, interpolation=target_interpolation).squeeze()
 
     h, w = size
     datapoint.frames[index].size = (h, w)
@@ -155,8 +157,9 @@ class RandomHorizontalFlip:
 
 
 class RandomResizeAPI:
+    # Add Interpolation Option
     def __init__(
-        self, sizes, consistent_transform, max_size=None, square=False, v2=False
+        self, sizes, consistent_transform, max_size=None, square=False, v2=False, interpolation="bilinear", target_interpolation="nearest"
     ):
         if isinstance(sizes, int):
             sizes = (sizes,)
@@ -166,19 +169,28 @@ class RandomResizeAPI:
         self.square = square
         self.consistent_transform = consistent_transform
         self.v2 = v2
+        self.interpolation = self._get_interpolation_mode(interpolation)
+        self.target_interpolation = self._get_interpolation_mode(target_interpolation)
+    
+    def _get_interpolation_mode(self, mode):
+        if mode == "bilinear": return F.InterpolationMode.BILINEAR
+        if mode == "nearest": return F.InterpolationMode.NEAREST
+        return mode
 
     def __call__(self, datapoint, **kwargs):
         if self.consistent_transform:
             size = random.choice(self.sizes)
             for i in range(len(datapoint.frames)):
                 datapoint = resize(
-                    datapoint, i, size, self.max_size, square=self.square, v2=self.v2
+                    datapoint, i, size, self.max_size, square=self.square, v2=self.v2, 
+                    interpolation=self.interpolation, target_interpolation=self.target_interpolation
                 )
             return datapoint
         for i in range(len(datapoint.frames)):
             size = random.choice(self.sizes)
             datapoint = resize(
-                datapoint, i, size, self.max_size, square=self.square, v2=self.v2
+                datapoint, i, size, self.max_size, square=self.square, v2=self.v2, 
+                interpolation=self.interpolation, target_interpolation=self.target_interpolation
             )
         return datapoint
 
