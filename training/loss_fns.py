@@ -89,6 +89,43 @@ def sigmoid_focal_loss(
         return loss.flatten(2).mean(-1) / num_objects  # average over spatial dims
     return loss.mean(1).sum() / num_objects
 
+def sigmoid_bce_loss(
+        inputs, 
+        targets, 
+        num_objects, 
+        loss_on_multimask=False
+):
+    """
+    Probability-based BCE using:
+      -y*log(p+eps1) - (1-y)*log(1-p+eps2)
+    where p = sigmoid(inputs).
+
+    Args:
+        inputs: logits tensor, shape arbitrary (e.g., [N,M,H,W] or [N,1,H,W])
+        targets: same shape as inputs, binary {0,1} (float ok)
+        num_objects: scalar (float) used to normalize losses (same convention as sigmoid_focal_loss)
+        loss_on_multimask: if True, returns [N, M] by averaging over spatial dims
+
+    Returns:
+        If loss_on_multimask: tensor [N, M]
+        Else: scalar tensor
+    """
+    p = inputs.sigmoid()
+
+    # eps values (hard coded to avoid log(0))
+    eps_pos = 1e-6
+    eps_neg = 1e-5
+
+    loss = -targets * torch.log(p + eps_pos) - (1.0 - targets) * torch.log((1.0 - p) + eps_neg)
+
+    if loss_on_multimask:
+        # For Mutimask Mode
+        assert loss.dim() == 4
+        return loss.flatten(2).mean(-1) / num_objects
+
+    # For Single Mask Mode
+    return loss.mean(1).sum() / num_objects
+
 
 def iou_loss(
     inputs, targets, pred_ious, num_objects, loss_on_multimask=False, use_l1_loss=False
@@ -134,6 +171,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         pred_obj_scores=False,
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
+        multimask_select='loss',  # 'loss' or 'score'
     ):
         """
         This class computes the multi-step multi-mask and IoU losses.
@@ -163,6 +201,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.supervise_all_iou = supervise_all_iou
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
+        self.multimask_select = multimask_select
 
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
@@ -275,7 +314,13 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 loss_multimask * self.weight_dict["loss_mask"]
                 + loss_multidice * self.weight_dict["loss_dice"]
             )
-            best_loss_inds = torch.argmin(loss_combo, dim=-1)
+            # [Modified] Select best mask based on 'loss' or 'score'
+            if self.multimask_select == 'loss':
+                best_loss_inds = torch.argmin(loss_combo, dim=-1)
+            elif self.multimask_select == 'score':
+                best_loss_inds = torch.argmax(ious, dim=-1)
+            else:
+                raise ValueError(f"Invalid multimask_select option: {self.multimask_select}")
             batch_inds = torch.arange(loss_combo.size(0), device=loss_combo.device)
             loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
             loss_dice = loss_multidice[batch_inds, best_loss_inds].unsqueeze(1)
@@ -327,6 +372,8 @@ class CustomBCELoss(MultiStepMultiMasksAndIous):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.weight_dict["loss_dice"] = 0.0 
+        print("Using CustomBCELoss: Dice loss weight set to 0.")
+        print(f"multimask mode: {self.multimask_select}")
 
     def _update_losses(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
@@ -334,12 +381,10 @@ class CustomBCELoss(MultiStepMultiMasksAndIous):
         target_masks = target_masks.expand_as(src_masks)
         device = src_masks.device
         
-        loss_multimask = sigmoid_focal_loss(
+        loss_multimask = sigmoid_bce_loss(
             src_masks,
             target_masks,
             num_objects,
-            alpha=self.focal_alpha,
-            gamma=0,    # Gamma=0 : BCE
             loss_on_multimask=True,
         )
 
@@ -357,16 +402,19 @@ class CustomBCELoss(MultiStepMultiMasksAndIous):
             target_obj = torch.ones(loss_multimask.shape[0], 1, device=device)
         else:
             target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[..., None].float()
-            loss_class = sigmoid_focal_loss(
+            loss_class = sigmoid_bce_loss(
                 object_score_logits,
                 target_obj,
                 num_objects,
-                alpha=self.focal_alpha_obj_score,
-                gamma=0,    # Gamma=0 : BCE
             )
 
         if loss_multimask.size(1) > 1:
-            best_loss_inds = torch.argmin(loss_multimask, dim=-1)
+            if self.multimask_select == 'loss':
+                best_loss_inds = torch.argmin(loss_multimask, dim=-1)
+            elif self.multimask_select == 'score':
+                best_loss_inds = torch.argmax(ious, dim=-1)
+            else:
+                raise ValueError(f"Invalid multimask_select option: {self.multimask_select}")
             batch_inds = torch.arange(loss_multimask.size(0), device=device)
             loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
             best_actual_iou = actual_ious[batch_inds, best_loss_inds].unsqueeze(1)
